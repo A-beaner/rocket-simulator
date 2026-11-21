@@ -2,7 +2,7 @@
 
 A lightweight, repeatable rocket-design iteration tool for American Rocketry Challenge (ARC) concept exploration.
 
-## Run it
+## Run one batch
 
 Requires Python 3.10+ and no third-party packages:
 
@@ -10,35 +10,37 @@ Requires Python 3.10+ and no third-party packages:
 python arc_optimizer.py --iterations 250 --population 120 --seed 7
 ```
 
-Each execution now:
+## Run until a design is stable and successful
 
-1. Generates and evaluates many candidate designs.
-2. Ranks the best candidates.
-3. Writes the latest results to `results/results.json` and `results/results.csv`.
-4. Appends every ranked candidate to the cumulative `arc-runs.csv` ledger.
-
-Use a different ledger path if desired:
+Use the continuous runner when you want it to keep searching until the same rocket is the best feasible result three times in a row:
 
 ```bash
-python arc_optimizer.py --iterations 500 --population 200 --ledger data/my-runs.csv
+python run_until_success.py \
+  --iterations 250 \
+  --population 120 \
+  --required-best-runs 3 \
+  --seed 7
 ```
 
-Useful options:
+The success condition is:
+
+1. The best candidate is feasible: within the target altitude tolerance, under the velocity limit, above the minimum stability, and below the mass limit.
+2. The same design parameters are the best feasible candidate for the required number of consecutive batches.
+
+Press `Ctrl+C` to stop. The last completed batch is preserved. To prevent an unlimited run, use `--max-batches 100`. Every batch appends ranked results to `arc-runs.csv` and refreshes the latest files in `results/`.
+
+Useful continuous-run options:
 
 ```text
---target-altitude 259       target apogee in metres
---altitude-tolerance 12     acceptable target band in metres
---max-velocity 230          screening velocity limit in m/s
---iterations 250            number of generations
---population 120            designs per generation
---seed 7                    repeatable random seed
---output results            latest run output directory
---ledger arc-runs.csv      cumulative run history
+--required-best-runs 3      confirmations required before stopping
+--max-batches 0             0 means unlimited until success
+--pause-seconds 5           optional delay between batches
+--seed 7                    starting seed; each batch uses a different seed
 ```
 
-## What it measures
+## Outputs
 
-The optimizer scores apogee proximity, maximum velocity, estimated stability in calibers, and total mass. It uses a transparent 1-D vertical-flight screening model and a genetic search. `arc-runs.csv` preserves the timestamp, run ID, settings, rank, score, and flight metrics from every execution.
+Each execution writes the latest candidates to `results/results.json` and `results/results.csv`, and appends every ranked candidate to the cumulative `arc-runs.csv` ledger.
 
 ## Important limitations
 
