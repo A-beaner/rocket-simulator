@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Fast, transparent rocket-design iteration tool for ARC concept exploration.
-
-This is a lightweight screening model, not a replacement for OpenRocket or a
-flight-safety review. Use it to search a design space, then verify finalists in
-OpenRocket with the exact motor, recovery system, launch site, and current ARC
-rules before building or flying.
-"""
+"""Fast, transparent rocket-design iteration tool for ARC concept exploration."""
 from __future__ import annotations
 
 import argparse
@@ -13,7 +7,9 @@ import csv
 import json
 import math
 import random
-from dataclasses import asdict, dataclass, replace
+import uuid
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 G = 9.80665
@@ -60,7 +56,6 @@ class Result:
 
 
 def stability_calibers(d: Design) -> float:
-    # A deliberately conservative Barrowman-inspired screening estimate.
     fin_area = max(d.fin_root_m * d.fin_span_m, 1e-6)
     body_area = math.pi * (d.body_diameter_m / 2) ** 2
     fin_effect = 0.55 * fin_area / body_area
@@ -70,7 +65,6 @@ def stability_calibers(d: Design) -> float:
 
 
 def simulate(d: Design, dt: float = 0.01) -> tuple[float, float, float]:
-    """Return apogee, max speed, and time-to-apogee using 1-D vertical flight."""
     mass = d.dry_mass_kg + d.payload_mass_kg + d.motor_prop_mass_kg
     burn_rate = d.motor_prop_mass_kg / max(d.burn_time_s, 1e-6)
     thrust = d.motor_impulse_ns / max(d.burn_time_s, 1e-6)
@@ -151,17 +145,33 @@ def optimize(seed: Design, constraints: Constraints, generations: int, populatio
 def write_outputs(results: list[Result], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     payload = []
-    for r in results:
-        item = asdict(r)
-        item["design"] = asdict(r.design)
-        payload.append(item)
+    for item in results:
+        row = asdict(item)
+        row["design"] = asdict(item.design)
+        payload.append(row)
     (output_dir / "results.json").write_text(json.dumps(payload, indent=2) + "\n")
     with (output_dir / "results.csv").open("w", newline="") as f:
         fields = ["rank", "feasible", "score", "apogee_m", "max_velocity_m_s", "stability_calibers", "total_mass_kg", "time_to_apogee_s"]
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
-        for rank, r in enumerate(results, 1):
-            writer.writerow({"rank": rank, "feasible": r.feasible, "score": round(r.score, 5), "apogee_m": round(r.apogee_m, 3), "max_velocity_m_s": round(r.max_velocity_m_s, 3), "stability_calibers": round(r.stability_calibers, 3), "total_mass_kg": round(r.total_mass_kg, 4), "time_to_apogee_s": round(r.time_to_apogee_s, 3)})
+        for rank, item in enumerate(results, 1):
+            writer.writerow({"rank": rank, "feasible": item.feasible, "score": round(item.score, 5), "apogee_m": round(item.apogee_m, 3), "max_velocity_m_s": round(item.max_velocity_m_s, 3), "stability_calibers": round(item.stability_calibers, 3), "total_mass_kg": round(item.total_mass_kg, 4), "time_to_apogee_s": round(item.time_to_apogee_s, 3)})
+
+
+def append_run_ledger(results: list[Result], ledger_path: Path, seed: int, generations: int, population: int) -> str:
+    """Append this run's ranked candidates to a cumulative CSV ledger."""
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    run_id = uuid.uuid4().hex[:12]
+    fields = ["timestamp_utc", "run_id", "seed", "generations", "population", "rank", "feasible", "score", "apogee_m", "max_velocity_m_s", "stability_calibers", "total_mass_kg", "time_to_apogee_s"]
+    new_file = not ledger_path.exists() or ledger_path.stat().st_size == 0
+    with ledger_path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        if new_file:
+            writer.writeheader()
+        timestamp = datetime.now(timezone.utc).isoformat()
+        for rank, item in enumerate(results, 1):
+            writer.writerow({"timestamp_utc": timestamp, "run_id": run_id, "seed": seed, "generations": generations, "population": population, "rank": rank, "feasible": item.feasible, "score": round(item.score, 5), "apogee_m": round(item.apogee_m, 3), "max_velocity_m_s": round(item.max_velocity_m_s, 3), "stability_calibers": round(item.stability_calibers, 3), "total_mass_kg": round(item.total_mass_kg, 4), "time_to_apogee_s": round(item.time_to_apogee_s, 3)})
+    return run_id
 
 
 def main() -> None:
@@ -173,13 +183,16 @@ def main() -> None:
     p.add_argument("--max-velocity", type=float, default=230.0)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", type=Path, default=Path("results"))
+    p.add_argument("--ledger", type=Path, default=Path("arc-runs.csv"), help="cumulative ranked run ledger")
     args = p.parse_args()
     constraints = Constraints(args.target_altitude, args.altitude_tolerance, args.max_velocity)
     results = optimize(Design(), constraints, args.iterations, args.population, random.Random(args.seed))
     write_outputs(results, args.output)
-    for i, r in enumerate(results[:10], 1):
-        print(f"{i:2}. {'PASS' if r.feasible else '----'} apogee={r.apogee_m:7.1f} m  v={r.max_velocity_m_s:6.1f} m/s  stability={r.stability_calibers:4.2f} cal  score={r.score:6.3f}")
-    print(f"\nWrote {args.output / 'results.json'} and {args.output / 'results.csv'}")
+    run_id = append_run_ledger(results, args.ledger, args.seed, args.iterations, args.population)
+    for i, item in enumerate(results[:10], 1):
+        print(f"{i:2}. {'PASS' if item.feasible else '----'} apogee={item.apogee_m:7.1f} m  v={item.max_velocity_m_s:6.1f} m/s  stability={item.stability_calibers:4.2f} cal  score={item.score:6.3f}")
+    print(f"\nRun {run_id} recorded in {args.ledger}")
+    print(f"Wrote {args.output / 'results.json'} and {args.output / 'results.csv'}")
     print("Verify finalists in OpenRocket and against the current ARC rules before construction or launch.")
 
 
